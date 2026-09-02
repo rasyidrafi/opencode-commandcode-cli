@@ -23,6 +23,7 @@ export const FALLBACK_MODEL_IDS = [
   "moonshotai/kimi-k2.7-code",
   "zai-org/glm-5.2",
   "qwen/qwen3.8-27b",
+  "meituan/longcat-2.0:free",
   "poolside/laguna-s-2.1-free",
 ];
 

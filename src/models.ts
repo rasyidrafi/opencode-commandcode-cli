@@ -1,3 +1,5 @@
+import { accessSync, constants as fsConstants, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { runCliText } from "./cli.js";
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -22,6 +24,8 @@ export type CommandCodeCliModel = {
   inputLimit?: number;
   maxOutput: number;
   reasoning: boolean;
+  /** Exact Command Code CLI effort levels. Empty means reasoning is not adjustable. */
+  reasoningEfforts?: string[];
   vision: boolean;
   attachment: boolean;
   toolCall: boolean;
@@ -40,6 +44,7 @@ type ModelsDevRecord = {
   family?: unknown;
   attachment?: unknown;
   reasoning?: unknown;
+  reasoning_options?: unknown;
   tool_call?: unknown;
   structured_output?: unknown;
   temperature?: unknown;
@@ -48,6 +53,9 @@ type ModelsDevRecord = {
   release_date?: unknown;
   last_updated?: unknown;
 };
+
+const COMMAND_CODE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const COMMAND_CODE_MODEL_REFERENCE = "dist/bundled/command-code-knowledge/reference/models.md";
 
 type OfficialPricingRecord = {
   id: string;
@@ -97,6 +105,101 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 
 function normalizeKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeEfforts(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const efforts = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => COMMAND_CODE_EFFORTS.has(item));
+  return [...new Set(efforts)];
+}
+
+function executableCandidates(executable: string): string[] {
+  const value = executable.trim();
+  if (!value) return [];
+  if (isAbsolute(value) || value.includes("/") || value.includes("\\")) return [value];
+
+  const result: string[] = [];
+  for (const directory of (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":")) {
+    if (!directory) continue;
+    result.push(join(directory, value));
+    if (process.platform === "win32") {
+      for (const extension of (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")) {
+        result.push(join(directory, `${value}${extension}`));
+      }
+    }
+  }
+  return result;
+}
+
+function commandCodeReferencePath(executable: string): string | undefined {
+  for (const candidate of executableCandidates(executable)) {
+    try {
+      accessSync(candidate, fsConstants.F_OK);
+      let current = dirname(realpathSync(candidate));
+      for (let depth = 0; depth < 8; depth += 1) {
+        const paths = [
+          join(current, COMMAND_CODE_MODEL_REFERENCE),
+          join(current, "bundled/command-code-knowledge/reference/models.md"),
+        ];
+        for (const path of paths) {
+          try {
+            accessSync(path, fsConstants.R_OK);
+            return path;
+          } catch {
+            // Keep walking up from wrappers, bin directories, and package dist directories.
+          }
+        }
+        const parent = dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+    } catch {
+      // The configured executable may be a shell alias or an unavailable path.
+    }
+  }
+  return undefined;
+}
+
+/** Parse the Command Code CLI's generated model reference, including effort support. */
+export function parseCommandCodeModelReference(markdown: string): Record<string, string[]> {
+  const models: Record<string, string[]> = {};
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const cells = rawLine.split("|").map((cell) => cell.trim());
+    if (cells.length < 6) continue;
+    const idCell = cells[1];
+    const effortCell = cells[4];
+    if (!idCell || !effortCell || !idCell.startsWith("`") || !idCell.endsWith("`")) continue;
+    const id = idCell.slice(1, -1).trim();
+    if (!id || id.toLowerCase() === "id") continue;
+
+    const efforts = effortCell === "—" || effortCell === "-"
+      ? []
+      : normalizeEfforts(effortCell.split(",")) ?? [];
+    models[id.toLowerCase()] = efforts;
+  }
+  return models;
+}
+
+function loadCommandCodeEffortCatalog(executable?: string): Record<string, string[]> | undefined {
+  const configured = executable?.trim() || process.env.OPENCODE_COMMANDCODE_CLI?.trim() || "cmdc";
+  const path = commandCodeReferencePath(configured);
+  if (!path) return undefined;
+  try {
+    return parseCommandCodeModelReference(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function modelsDevReasoningEfforts(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  if (value.length === 0) return [];
+  const effort = value.find((item) => recordValue(item)?.type === "effort");
+  if (!effort) return undefined;
+  return normalizeEfforts(recordValue(effort)?.values) ?? [];
 }
 
 function zeroCost(): ModelCost {
@@ -266,10 +369,16 @@ function findModelsDev(id: string, metadata: Record<string, ModelsDevRecord>): M
   return undefined;
 }
 
+function findModelsDevExact(id: string, metadata: Record<string, ModelsDevRecord>): ModelsDevRecord | undefined {
+  const byKey = new Map(Object.entries(metadata).map(([key, value]) => [key.toLowerCase(), value]));
+  return byKey.get(id.toLowerCase());
+}
+
 function metadataModel(
   base: CommandCodeCliModel,
   metadata: ModelsDevRecord | undefined,
   official: OfficialPricingRecord | undefined,
+  reasoningEfforts: string[] | undefined,
 ): CommandCodeCliModel {
   const modalities = recordValue(metadata?.modalities);
   const inputModalities = Array.isArray(modalities?.input)
@@ -301,6 +410,7 @@ function metadataModel(
     ...(inputLimit !== undefined ? { inputLimit } : {}),
     maxOutput,
     reasoning: booleanValue(metadata?.reasoning, official?.reasoning ?? base.reasoning),
+    ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
     vision: inputModalities.includes("image"),
     attachment: booleanValue(metadata?.attachment, inputModalities.some((value) => value !== "text")),
     toolCall: booleanValue(metadata?.tool_call, base.toolCall),
@@ -323,6 +433,7 @@ export async function refreshCommandCodeCliModels(options: {
   refreshInFlight = (async () => {
     try {
       const fetchFn = options.fetchFn ?? fetch;
+      const commandCodeEfforts = loadCommandCodeEffortCatalog(options.executable);
       const [cliResult, modelsDevResult, officialResult] = await Promise.all([
         (options.runText ?? runCliText)(
           ["--list-models", "--no-auto-update"],
@@ -343,12 +454,16 @@ export async function refreshCommandCodeCliModels(options: {
         entry,
         modelsDev ? findModelsDev(entry.id, modelsDev) : undefined,
         findOfficialPrice(entry.id, pricing),
+        commandCodeEfforts?.[entry.id.toLowerCase()] ?? modelsDevReasoningEfforts(
+          modelsDev ? findModelsDevExact(entry.id, modelsDev)?.reasoning_options : undefined,
+        ),
       ));
       cachedModels = merged;
       cachedAt = Date.now();
       log.info("loaded Command Code CLI models with external metadata", {
         count: merged.length,
         modelsDev: Object.keys(modelsDev ?? {}).length,
+        effortCatalog: commandCodeEfforts ? Object.keys(commandCodeEfforts).length : 0,
         priced: merged.filter((entry) => entry.cost.input > 0 || entry.cost.output > 0 || entry.cost.cache.read > 0).length,
       });
       return merged;
@@ -400,4 +515,9 @@ export function findCommandCodeCliModel(modelId: string | undefined): CommandCod
   return getCommandCodeCliModels().find(
     (entry) => entry.id.toLowerCase() === resolved.toLowerCase(),
   ) ?? fallbackModel(resolved);
+}
+
+/** Build the explicit OpenCode variant map from Command Code's effort list. */
+export function commandCodeCliModelVariants(model: CommandCodeCliModel): Record<string, Record<string, unknown>> {
+  return Object.fromEntries((model.reasoningEfforts ?? []).map((effort) => [effort, {}]));
 }

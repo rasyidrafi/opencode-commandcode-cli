@@ -4,6 +4,9 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  commandCodeCliModelVariants,
+  fallbackCommandCodeCliModels,
+  parseCommandCodeModelReference,
   parseCliModelList,
   parseOfficialPricingPage,
   resolveCommandCodeCliModel,
@@ -24,6 +27,27 @@ test("parses the official CLI model list", () => {
     "deepseek/deepseek-v4-flash",
     "claude-sonnet-5",
   ]);
+});
+
+test("parses Command Code effort metadata", () => {
+  const efforts = parseCommandCodeModelReference([
+    "| `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | 1M | high, max | rates | Go |",
+    "| `meta/muse-spark-1.2-contributor` | Muse Spark 1.2 Contributor | 1M | — | rates | Go |",
+  ].join("\n"));
+  assert.deepEqual(efforts["deepseek/deepseek-v4-flash"], ["high", "max"]);
+  assert.deepEqual(efforts["meta/muse-spark-1.2-contributor"], []);
+  assert.deepEqual(
+    Object.keys(commandCodeCliModelVariants({ reasoningEfforts: efforts["meta/muse-spark-1.2-contributor"] })),
+    [],
+  );
+  assert.deepEqual(
+    Object.keys(commandCodeCliModelVariants({ reasoningEfforts: efforts["deepseek/deepseek-v4-flash"] })),
+    ["high", "max"],
+  );
+});
+
+test("keeps LongCat 2.0 Free in the fallback catalog", () => {
+  assert.ok(fallbackCommandCodeCliModels().some((model) => model.id === "meituan/longcat-2.0:free"));
 });
 
 test("resolves provider-qualified and short model ids", () => {

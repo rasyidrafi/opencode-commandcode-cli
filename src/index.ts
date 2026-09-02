@@ -14,6 +14,7 @@ import {
 import {
   fallbackCommandCodeCliModels,
   findCommandCodeCliModel,
+  commandCodeCliModelVariants,
   getCommandCodeCliModels,
   refreshCommandCodeCliModels,
   type CommandCodeCliModel,
@@ -22,6 +23,7 @@ import { getProxyBaseUrl, setRuntimeModels, startProxy, stopProxy } from "./prox
 import { log } from "./log.js";
 
 function providerModel(model: CommandCodeCliModel, baseURL: string): Record<string, unknown> {
+  const variants = commandCodeCliModelVariants(model);
   return {
     id: model.id,
     providerID: PROVIDER_ID,
@@ -53,11 +55,12 @@ function providerModel(model: CommandCodeCliModel, baseURL: string): Record<stri
     options: { includeUsage: false },
     headers: {},
     release_date: "",
-    variants: {},
+    variants,
   };
 }
 
 function configModel(model: CommandCodeCliModel): Record<string, unknown> {
+  const variants = commandCodeCliModelVariants(model);
   return {
     name: model.name,
     reasoning: model.reasoning,
@@ -73,6 +76,7 @@ function configModel(model: CommandCodeCliModel): Record<string, unknown> {
       output: model.maxOutput,
     },
     options: { includeUsage: false },
+    variants,
   };
 }
 
@@ -95,8 +99,20 @@ function ensureProviderConfig(config: Record<string, any>, models: CommandCodeCl
       includeUsage: false,
     },
     models: {
-      ...Object.fromEntries(models.map((entry) => [entry.id, configModel(entry)])),
       ...existingModels,
+      ...Object.fromEntries(models.map((entry) => {
+        const existingModel = existingModels[entry.id] && typeof existingModels[entry.id] === "object"
+          ? existingModels[entry.id]
+          : {};
+        return [entry.id, {
+          ...configModel(entry),
+          ...existingModel,
+          // Command Code's effort catalog is authoritative. Keep the explicit
+          // map so OpenCode cannot infer variants from the Anthropic transport.
+          reasoning: entry.reasoning,
+          variants: commandCodeCliModelVariants(entry),
+        }];
+      })),
     },
   };
 }
