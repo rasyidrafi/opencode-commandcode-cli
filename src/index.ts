@@ -14,6 +14,7 @@ import {
 import {
   fallbackCommandCodeCliModels,
   findCommandCodeCliModel,
+  commandCodeCliConfigVariants,
   commandCodeCliModelVariants,
   getCommandCodeCliModels,
   refreshCommandCodeCliModels,
@@ -60,7 +61,7 @@ function providerModel(model: CommandCodeCliModel, baseURL: string): Record<stri
 }
 
 function configModel(model: CommandCodeCliModel): Record<string, unknown> {
-  const variants = commandCodeCliModelVariants(model);
+  const variants = commandCodeCliConfigVariants(model);
   return {
     name: model.name,
     reasoning: model.reasoning,
@@ -110,7 +111,7 @@ function ensureProviderConfig(config: Record<string, any>, models: CommandCodeCl
           // Command Code's effort catalog is authoritative. Keep the explicit
           // map so OpenCode cannot infer variants from the Anthropic transport.
           reasoning: entry.reasoning,
-          variants: commandCodeCliModelVariants(entry),
+          variants: commandCodeCliConfigVariants(entry),
         }];
       })),
     },

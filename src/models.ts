@@ -56,6 +56,7 @@ type ModelsDevRecord = {
 
 const COMMAND_CODE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const COMMAND_CODE_MODEL_REFERENCE = "dist/bundled/command-code-knowledge/reference/models.md";
+const OPENCODE_GENERATED_VARIANTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "thinking"] as const;
 
 type OfficialPricingRecord = {
   id: string;
@@ -520,4 +521,19 @@ export function findCommandCodeCliModel(modelId: string | undefined): CommandCod
 /** Build the explicit OpenCode variant map from Command Code's effort list. */
 export function commandCodeCliModelVariants(model: CommandCodeCliModel): Record<string, Record<string, unknown>> {
   return Object.fromEntries((model.reasoningEfforts ?? []).map((effort) => [effort, {}]));
+}
+
+/**
+ * Add disabled tombstones for OpenCode's built-in variants. Config-defined
+ * models are merged with provider defaults before OpenCode applies its own
+ * filtering, so an empty map alone cannot suppress an inferred variant.
+ */
+export function commandCodeCliConfigVariants(model: CommandCodeCliModel): Record<string, Record<string, unknown>> {
+  const supported = commandCodeCliModelVariants(model);
+  const disabled = Object.fromEntries(
+    OPENCODE_GENERATED_VARIANTS
+      .filter((id) => !(id in supported))
+      .map((id) => [id, { disabled: true }]),
+  );
+  return { ...disabled, ...supported };
 }

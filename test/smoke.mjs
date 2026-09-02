@@ -4,6 +4,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  commandCodeCliConfigVariants,
   commandCodeCliModelVariants,
   fallbackCommandCodeCliModels,
   parseCommandCodeModelReference,
@@ -44,6 +45,16 @@ test("parses Command Code effort metadata", () => {
     Object.keys(commandCodeCliModelVariants({ reasoningEfforts: efforts["deepseek/deepseek-v4-flash"] })),
     ["high", "max"],
   );
+  assert.deepEqual(commandCodeCliConfigVariants({ reasoningEfforts: [] }), {
+    none: { disabled: true },
+    minimal: { disabled: true },
+    low: { disabled: true },
+    medium: { disabled: true },
+    high: { disabled: true },
+    xhigh: { disabled: true },
+    max: { disabled: true },
+    thinking: { disabled: true },
+  });
 });
 
 test("keeps LongCat 2.0 Free in the fallback catalog", () => {
