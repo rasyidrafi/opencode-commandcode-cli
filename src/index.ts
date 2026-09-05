@@ -12,19 +12,19 @@ import {
   SESSION_HEADER,
 } from "./constants.js";
 import {
-  fallbackCommandCodeCliModels,
-  findCommandCodeCliModel,
-  commandCodeCliConfigVariants,
-  commandCodeCliModelVariants,
-  getCommandCodeCliModels,
-  refreshCommandCodeCliModels,
-  type CommandCodeCliModel,
+  fallbackCommandCodeModels,
+  findCommandCodeModel,
+  commandCodeConfigVariants,
+  commandCodeModelVariants,
+  getCommandCodeModels,
+  refreshCommandCodeModels,
+  type CommandCodeModel,
 } from "./models.js";
 import { getProxyBaseUrl, setRuntimeModels, startProxy, stopProxy } from "./proxy.js";
 import { log } from "./log.js";
 
-function providerModel(model: CommandCodeCliModel, baseURL: string): Record<string, unknown> {
-  const variants = commandCodeCliModelVariants(model);
+function providerModel(model: CommandCodeModel, baseURL: string): Record<string, unknown> {
+  const variants = commandCodeModelVariants(model);
   return {
     id: model.id,
     providerID: PROVIDER_ID,
@@ -60,8 +60,8 @@ function providerModel(model: CommandCodeCliModel, baseURL: string): Record<stri
   };
 }
 
-function configModel(model: CommandCodeCliModel): Record<string, unknown> {
-  const variants = commandCodeCliConfigVariants(model);
+function configModel(model: CommandCodeModel): Record<string, unknown> {
+  const variants = commandCodeConfigVariants(model);
   return {
     name: model.name,
     reasoning: model.reasoning,
@@ -81,7 +81,7 @@ function configModel(model: CommandCodeCliModel): Record<string, unknown> {
   };
 }
 
-function ensureProviderConfig(config: Record<string, any>, models: CommandCodeCliModel[]): void {
+function ensureProviderConfig(config: Record<string, any>, models: CommandCodeModel[]): void {
   if (!config.provider || typeof config.provider !== "object") config.provider = {};
   const existing = config.provider[PROVIDER_ID] && typeof config.provider[PROVIDER_ID] === "object"
     ? config.provider[PROVIDER_ID]
@@ -111,7 +111,7 @@ function ensureProviderConfig(config: Record<string, any>, models: CommandCodeCl
           // Command Code's effort catalog is authoritative. Keep the explicit
           // map so OpenCode cannot infer variants from the Anthropic transport.
           reasoning: entry.reasoning,
-          variants: commandCodeCliConfigVariants(entry),
+          variants: commandCodeConfigVariants(entry),
         }];
       })),
     },
@@ -137,7 +137,7 @@ async function cliIsAuthenticated(directory: string): Promise<boolean> {
   return result.code === 0;
 }
 
-export const CommandCodeCliPlugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
+export const CommandCodePlugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
   try {
     await startProxy(input.directory);
   } catch (error) {
@@ -148,7 +148,7 @@ export const CommandCodeCliPlugin: Plugin = async (input: PluginInput): Promise<
     async config(config) {
       await startProxy(input.directory);
       await installLocalProviderMarker(input);
-      const models = await refreshCommandCodeCliModels({ cwd: input.directory });
+      const models = await refreshCommandCodeModels({ cwd: input.directory });
       setRuntimeModels(models);
       ensureProviderConfig(config as Record<string, any>, models);
     },
@@ -158,6 +158,8 @@ export const CommandCodeCliPlugin: Plugin = async (input: PluginInput): Promise<
       const messageModel = hookInput.message.model as { variant?: unknown } | undefined;
       const variant = typeof messageModel?.variant === "string" ? messageModel.variant : undefined;
       output.headers[MODEL_HEADER] = hookInput.model.id;
+      output.headers["x-opencode-commandcode-message"] = hookInput.message.id;
+      output.headers["x-opencode-commandcode-mode"] = hookInput.agent === "plan" ? "plan" : "build";
       if (variant) output.headers[EFFORT_HEADER] = variant;
       output.headers[DIRECTORY_HEADER] = input.directory;
       if (hookInput.sessionID) output.headers[SESSION_HEADER] = hookInput.sessionID;
@@ -173,15 +175,15 @@ export const CommandCodeCliPlugin: Plugin = async (input: PluginInput): Promise<
 
     "experimental.provider.small_model": async (hookInput, output) => {
       if (hookInput.provider.id !== PROVIDER_ID) return;
-      const preferred = getCommandCodeCliModels().find((entry) => /flash|haiku|mini/i.test(entry.id));
-      const fallback = preferred ?? fallbackCommandCodeCliModels()[0];
+      const preferred = getCommandCodeModels().find((entry) => /flash|haiku|mini/i.test(entry.id));
+      const fallback = preferred ?? fallbackCommandCodeModels()[0];
       output.model = hookInput.provider.models[fallback.id] ?? Object.values(hookInput.provider.models)[0];
     },
 
     provider: {
       id: PROVIDER_ID,
       async models(provider) {
-        const models = await refreshCommandCodeCliModels({ cwd: input.directory });
+        const models = await refreshCommandCodeModels({ cwd: input.directory });
         setRuntimeModels(models);
         const baseURL = getProxyBaseUrl();
         const entries = Object.fromEntries(models.map((entry) => [entry.id, providerModel(entry, baseURL)]));
@@ -222,13 +224,13 @@ export const CommandCodeCliPlugin: Plugin = async (input: PluginInput): Promise<
 
 export { getProxyBaseUrl, getProxyPort, startProxy, stopProxy } from "./proxy.js";
 export {
-  getCommandCodeCliModels,
-  refreshCommandCodeCliModels,
-  invalidateCommandCodeCliModelCache,
+  getCommandCodeModels,
+  refreshCommandCodeModels,
+  invalidateCommandCodeModelCache,
   parseCliModelList,
   parseOfficialPricingPage,
 } from "./models.js";
 export { buildCommandCodePrompt } from "./prompt.js";
 export { LOCAL_API_KEY, PROVIDER_ID } from "./constants.js";
 
-export default CommandCodeCliPlugin;
+export default CommandCodePlugin;

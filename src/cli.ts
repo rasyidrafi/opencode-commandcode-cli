@@ -3,7 +3,8 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnOptions,
 } from "node:child_process";
-import { once } from "node:events";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { log } from "./log.js";
 import {
   DEFAULT_MAX_TURNS,
@@ -35,6 +36,8 @@ export type RunCliOptions = {
   resumeSession?: string;
   noSession?: boolean;
   yolo?: boolean;
+  plan?: boolean;
+  onSession?: (id: string) => Promise<void>;
   maxTurns?: number;
   signal?: AbortSignal;
   executable?: string;
@@ -58,11 +61,46 @@ function spawnOptions(cwd: string): SpawnOptions {
   return {
     cwd,
     env: { ...process.env },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     detached: process.platform !== "win32",
     windowsHide: true,
-    shell: process.platform === "win32",
+    shell: false,
   };
+}
+
+/** Resolve npm's Windows shim without executing a command shell. */
+export function cliInvocation(executable: string, args: string[], platform = process.platform): { command: string; args: string[] } {
+  if (platform !== "win32") return { command: executable, args };
+  const candidates = isAbsolute(executable) || /[/\\]/.test(executable)
+    ? [resolve(executable)]
+    : (process.env.PATH ?? "").split(";").filter(Boolean).map(dir => join(dir, executable));
+  for (const candidate of candidates) {
+    if (/\.(mjs|cjs|js)$/i.test(candidate) && existsSync(candidate)) return { command: "node.exe", args: [candidate, ...args] };
+    if (/\.exe$/i.test(candidate) && existsSync(candidate)) return { command: candidate, args };
+    if (!/\.[^/\\]+$/.test(candidate) && existsSync(candidate + ".exe")) return { command: candidate + ".exe", args };
+    if (!/^(cmdc|cmd|command-code)(\.cmd|\.bat)?$/i.test(basename(candidate))) continue;
+    const packageDir = join(dirname(candidate), "node_modules", "command-code");
+    try {
+      const pkg = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
+      const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cmdc ?? pkg.bin?.["command-code"] ?? pkg.bin?.cmd;
+      if (typeof bin === "string") {
+        const entry = resolve(packageDir, bin);
+        if (existsSync(entry)) return { command: "node.exe", args: [entry, ...args] };
+      }
+    } catch { /* Try the next PATH directory. */ }
+  }
+  throw new Error("Cannot resolve Command Code without a shell. Set OPENCODE_COMMANDCODE_CLI to its .js/.mjs entrypoint or a native .exe.");
+}
+
+function spawnCli(executable: string, args: string[], cwd: string) {
+  const invocation = cliInvocation(executable, args);
+  const child = spawn(invocation.command, invocation.args, spawnOptions(cwd)) as ChildProcessWithoutNullStreams;
+  let failure: Error | undefined;
+  // Attach before any await; ENOENT is emitted asynchronously, not thrown by spawn.
+  child.on("error", error => { failure = error; });
+  child.stdin.on("error", error => { if ((error as NodeJS.ErrnoException).code !== "EPIPE") failure = error; });
+  const closed = new Promise<number | null>(resolve => child.once("close", resolve));
+  return { child, closed, failure: () => failure };
 }
 
 function terminate(child: ChildProcessWithoutNullStreams, force = false): void {
@@ -149,16 +187,19 @@ function cliArguments(options: RunCliOptions): string[] {
     "--skip-onboarding",
     "--no-auto-update",
     "--max-turns",
-    String(Math.max(1, Math.floor(options.maxTurns ?? envNumber("OPENCODE_COMMANDCODE_CLI_MAX_TURNS", DEFAULT_MAX_TURNS, 1)))),
+    String(Math.max(1, Math.floor(options.maxTurns ?? envNumber("OPENCODE_COMMANDCODE_MAX_TURNS", DEFAULT_MAX_TURNS, 1)))),
   ];
   if (options.resumeSession) args.push("--resume", options.resumeSession);
   else if (options.sessionName && !options.noSession) args.push("--name", options.sessionName);
   if (options.model) args.push("--model", options.model);
   if (options.effort) args.push("--effort", options.effort);
-  if (options.yolo ?? envBoolean("OPENCODE_COMMANDCODE_CLI_YOLO", true)) args.push("--yolo");
+  if (options.plan) args.push("--plan");
+  else {
+    args.push("--permission-mode", "standard");
+    if (options.yolo ?? envBoolean("OPENCODE_COMMANDCODE_YOLO", true)) args.push("--yolo");
+  }
   if (options.noSession) args.push("--no-session");
-  // Keep the prompt an argv value. No shell interpolation occurs here.
-  args.push(options.prompt);
+  // The prompt is sent through stdin to avoid OS argument limits.
   return args;
 }
 
@@ -285,11 +326,6 @@ function mapRawFrame(
   return [];
 }
 
-async function waitForClose(child: ChildProcessWithoutNullStreams): Promise<number | null> {
-  const [code] = await once(child, "close") as [number | null, string | null];
-  return code;
-}
-
 /**
  * Run the official Command Code CLI and translate its documented JSON event
  * stream into provider-friendly text, reasoning, activity, and finish events.
@@ -305,14 +341,17 @@ export async function* streamCommandCode(
   };
 
   const executable = options.executable || commandCodeExecutable();
-  let child: ChildProcessWithoutNullStreams;
+  let processState: ReturnType<typeof spawnCli>;
   try {
-    child = spawn(executable, cliArguments(options), spawnOptions(options.cwd)) as ChildProcessWithoutNullStreams;
+    processState = spawnCli(executable, cliArguments(options), options.cwd);
   } catch (error) {
     yield notifyActivity({ kind: "error", text: `Could not start ${executable}: ${textFromError(error)}` });
     return;
   }
 
+  const { child, closed } = processState;
+  child.stdout.setEncoding("utf8");
+  child.stdin.end(options.prompt);
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer | string) => {
     if (stderr.length >= MAX_STDERR_BYTES) return;
@@ -326,6 +365,7 @@ export async function* streamCommandCode(
     terminate(child, true);
   };
   options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
 
   const state = {
     sessionId: undefined as string | undefined,
@@ -344,6 +384,15 @@ export async function* streamCommandCode(
 
   let buffer = "";
   let exitCode: number | null = null;
+  let pendingFinish: Extract<CliMappedEvent, { kind: "finish" }> | undefined;
+  const map = async (parsed: Record<string, unknown>) => {
+    const raw = parsed.type === "event" ? parsed.event as Record<string, unknown> : parsed;
+    if (raw && typeof raw.sessionId === "string" && raw.sessionId !== state.sessionId) {
+      state.sessionId = raw.sessionId;
+      await options.onSession?.(raw.sessionId);
+    }
+    return mapRawFrame(parsed, state);
+  };
   try {
     for await (const chunk of child.stdout) {
       if (aborted || options.signal?.aborted) throw abortError();
@@ -368,34 +417,42 @@ export async function* streamCommandCode(
           continue;
         }
         if (!parsed || typeof parsed !== "object") continue;
-        for (const event of mapRawFrame(parsed as Record<string, unknown>, state)) {
-          yield notifyActivity(event);
+        for (const event of await map(parsed as Record<string, unknown>)) {
+          if (event.kind === "finish") pendingFinish = event;
+          else yield notifyActivity(event);
         }
       }
     }
     const tail = buffer.trim();
     if (tail) {
-      try {
-        const parsed = JSON.parse(tail) as Record<string, unknown>;
-        for (const event of mapRawFrame(parsed, state)) yield notifyActivity(event);
-      } catch {
-        // Ignore a partial final frame. The exit status below reports failure.
+      let parsed: unknown;
+      try { parsed = JSON.parse(tail); } catch { /* Partial JSON is not an event. */ }
+      if (parsed && typeof parsed === "object") {
+        for (const event of await map(parsed as Record<string, unknown>)) {
+          if (event.kind === "finish") pendingFinish = event;
+          else yield notifyActivity(event);
+        }
       }
     }
-    exitCode = await waitForClose(child);
+    exitCode = await closed;
+    if (aborted) throw abortError();
+    if (processState.failure()) throw processState.failure();
   } catch (error) {
     if (aborted || options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
       throw abortError();
     }
     state.sawError = true;
     yield notifyActivity({ kind: "error", text: `Command Code CLI stream failed: ${textFromError(error)}` });
-    await waitForClose(child).catch(() => undefined);
+    terminate(child, true);
+    await closed;
   } finally {
     options.signal?.removeEventListener("abort", onAbort);
     if (child.exitCode === null && child.signalCode === null) terminate(child, true);
+    await closed;
   }
 
-  if (!state.finished && !state.sawError) {
+  if (pendingFinish && !state.sawError && (exitCode === 0 || exitCode === 8)) yield notifyActivity(pendingFinish);
+  else if (!state.sawError) {
     const detail = stderr.trim();
     yield notifyActivity({
       kind: "error",
@@ -411,20 +468,23 @@ export async function runCliText(
   args: string[],
   options: { cwd: string; executable?: string; signal?: AbortSignal } ,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const executable = options.executable || commandCodeExecutable();
-  const child = spawn(executable, args, spawnOptions(options.cwd)) as ChildProcessWithoutNullStreams;
+  if (options.signal?.aborted) throw abortError();
+  const processState = spawnCli(options.executable || commandCodeExecutable(), args, options.cwd);
+  const { child, closed } = processState;
+  child.stdin.end();
   let stdout = "";
   let stderr = "";
-  child.stdout.on("data", (chunk: Buffer | string) => {
-    stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-  });
-  child.stderr.on("data", (chunk: Buffer | string) => {
-    stderr += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-  });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
   const onAbort = () => terminate(child, true);
   options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
   try {
-    const code = await waitForClose(child);
+    const code = await closed;
+    if (options.signal?.aborted) throw abortError();
+    if (processState.failure()) throw processState.failure();
     return { code, stdout, stderr };
   } finally {
     options.signal?.removeEventListener("abort", onAbort);

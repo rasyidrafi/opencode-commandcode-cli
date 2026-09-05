@@ -15,7 +15,7 @@ export type ModelCost = {
   cache: { read: number; write: number };
 };
 
-export type CommandCodeCliModel = {
+export type CommandCodeModel = {
   id: string;
   name: string;
   description?: string;
@@ -74,9 +74,9 @@ const CATALOG_TTL_MS = 30 * 60 * 1000;
 const MODELS_DEV_URL = "https://models.dev/models.json";
 const COMMAND_CODE_PRICING_URL = "https://commandcode.ai/docs/resources/pricing-limits";
 
-let cachedModels: CommandCodeCliModel[] | null = null;
+let cachedModels: CommandCodeModel[] | null = null;
 let cachedAt = 0;
-let refreshInFlight: Promise<CommandCodeCliModel[]> | null = null;
+let refreshInFlight: Promise<CommandCodeModel[]> | null = null;
 
 function displayName(id: string): string {
   const short = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
@@ -207,7 +207,7 @@ function zeroCost(): ModelCost {
   return { input: 0, output: 0, cache: { read: 0, write: 0 } };
 }
 
-function fallbackModel(id: string, description?: string): CommandCodeCliModel {
+function fallbackModel(id: string, description?: string): CommandCodeModel {
   return {
     id,
     name: displayName(id),
@@ -225,13 +225,13 @@ function fallbackModel(id: string, description?: string): CommandCodeCliModel {
   };
 }
 
-export function fallbackCommandCodeCliModels(): CommandCodeCliModel[] {
+export function fallbackCommandCodeModels(): CommandCodeModel[] {
   return FALLBACK_MODEL_IDS.map((id) => fallbackModel(id));
 }
 
 /** Parse the human-readable output of the official `cmdc --list-models`. */
-export function parseCliModelList(output: string): CommandCodeCliModel[] {
-  const models: CommandCodeCliModel[] = [];
+export function parseCliModelList(output: string): CommandCodeModel[] {
+  const models: CommandCodeModel[] = [];
   const seen = new Set<string>();
   for (const rawLine of output.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
@@ -376,11 +376,11 @@ function findModelsDevExact(id: string, metadata: Record<string, ModelsDevRecord
 }
 
 function metadataModel(
-  base: CommandCodeCliModel,
+  base: CommandCodeModel,
   metadata: ModelsDevRecord | undefined,
   official: OfficialPricingRecord | undefined,
   reasoningEfforts: string[] | undefined,
-): CommandCodeCliModel {
+): CommandCodeModel {
   const modalities = recordValue(metadata?.modalities);
   const inputModalities = Array.isArray(modalities?.input)
     ? modalities.input.filter((value): value is string => typeof value === "string")
@@ -424,31 +424,39 @@ function metadataModel(
   };
 }
 
-export async function refreshCommandCodeCliModels(options: {
+export async function refreshCommandCodeModels(options: {
   cwd?: string;
   executable?: string;
   runText?: typeof runCliText;
   fetchFn?: typeof fetch;
-} = {}): Promise<CommandCodeCliModel[]> {
+} = {}): Promise<CommandCodeModel[]> {
   if (refreshInFlight) return refreshInFlight;
   refreshInFlight = (async () => {
     try {
       const fetchFn = options.fetchFn ?? fetch;
       const commandCodeEfforts = loadCommandCodeEffortCatalog(options.executable);
-      const [cliResult, modelsDevResult, officialResult] = await Promise.all([
+      const optionalMetadata = async (url: string, json: boolean): Promise<unknown> => {
+        try {
+          const response = await fetchFn(url, { signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) return json ? {} : "";
+          return json ? await response.json() : await response.text();
+        } catch (error) {
+          log.warn("optional model metadata unavailable", { url, error: error instanceof Error ? error.message : String(error) });
+          return json ? {} : "";
+        }
+      };
+      const [cliResult, modelsDevPayload, officialPayload] = await Promise.all([
         (options.runText ?? runCliText)(
           ["--list-models", "--no-auto-update"],
-          { cwd: options.cwd ?? process.cwd(), executable: options.executable },
+          { cwd: options.cwd ?? process.cwd(), executable: options.executable, signal: AbortSignal.timeout(15_000) },
         ),
-        fetchFn(MODELS_DEV_URL),
-        fetchFn(COMMAND_CODE_PRICING_URL),
+        optionalMetadata(MODELS_DEV_URL, true),
+        optionalMetadata(COMMAND_CODE_PRICING_URL, false),
       ]);
       if (cliResult.code !== 0) throw new Error(cliResult.stderr.trim() || `CLI exited with code ${cliResult.code ?? "unknown"}`);
       const listed = parseCliModelList(cliResult.stdout);
       if (!listed.length) throw new Error("CLI model list contained no models");
-
-      const modelsDevPayload: unknown = modelsDevResult.ok ? await modelsDevResult.json() : {};
-      const officialHtml = officialResult.ok ? await officialResult.text() : "";
+      const officialHtml = typeof officialPayload === "string" ? officialPayload : "";
       const modelsDev = recordValue(modelsDevPayload) as Record<string, ModelsDevRecord> | undefined;
       const pricing = parseOfficialPricingPage(officialHtml);
       const merged = listed.map((entry) => metadataModel(
@@ -473,7 +481,7 @@ export async function refreshCommandCodeCliModels(options: {
         log.warn("Command Code CLI model refresh failed; keeping cached catalog", error instanceof Error ? error.message : error);
         return cachedModels;
       }
-      cachedModels = fallbackCommandCodeCliModels();
+      cachedModels = fallbackCommandCodeModels();
       cachedAt = Date.now();
       log.warn("Command Code CLI metadata unavailable; using fallback", error instanceof Error ? error.message : error);
       return cachedModels;
@@ -484,24 +492,24 @@ export async function refreshCommandCodeCliModels(options: {
   return refreshInFlight;
 }
 
-export function invalidateCommandCodeCliModelCache(): void {
+export function invalidateCommandCodeModelCache(): void {
   cachedModels = null;
   cachedAt = 0;
 }
 
-export function getCommandCodeCliModels(): CommandCodeCliModel[] {
-  if (!cachedModels) cachedModels = fallbackCommandCodeCliModels();
-  if (Date.now() - cachedAt >= CATALOG_TTL_MS && !refreshInFlight) void refreshCommandCodeCliModels();
+export function getCommandCodeModels(): CommandCodeModel[] {
+  if (!cachedModels) cachedModels = fallbackCommandCodeModels();
+  if (Date.now() - cachedAt >= CATALOG_TTL_MS && !refreshInFlight) void refreshCommandCodeModels();
   return cachedModels;
 }
 
-export function resolveCommandCodeCliModel(modelId: string | undefined): string {
+export function resolveCommandCodeModel(modelId: string | undefined): string {
   const raw = (modelId ?? DEFAULT_MODEL_ID)
-    .replace(/^commandcode-cli\//i, "")
-    .replace(/^command-code-cli\//i, "")
+    .replace(/^commandcode\//i, "")
+    .replace(/^command-code\//i, "")
     .trim();
   if (!raw) return DEFAULT_MODEL_ID;
-  const models = getCommandCodeCliModels();
+  const models = getCommandCodeModels();
   const exact = models.find((entry) => entry.id.toLowerCase() === raw.toLowerCase());
   if (exact) return exact.id;
   if (!raw.includes("/")) {
@@ -511,15 +519,15 @@ export function resolveCommandCodeCliModel(modelId: string | undefined): string 
   return raw;
 }
 
-export function findCommandCodeCliModel(modelId: string | undefined): CommandCodeCliModel {
-  const resolved = resolveCommandCodeCliModel(modelId);
-  return getCommandCodeCliModels().find(
+export function findCommandCodeModel(modelId: string | undefined): CommandCodeModel {
+  const resolved = resolveCommandCodeModel(modelId);
+  return getCommandCodeModels().find(
     (entry) => entry.id.toLowerCase() === resolved.toLowerCase(),
   ) ?? fallbackModel(resolved);
 }
 
 /** Build the explicit OpenCode variant map from Command Code's effort list. */
-export function commandCodeCliModelVariants(model: CommandCodeCliModel): Record<string, Record<string, unknown>> {
+export function commandCodeModelVariants(model: CommandCodeModel): Record<string, Record<string, unknown>> {
   return Object.fromEntries((model.reasoningEfforts ?? []).map((effort) => [effort, {}]));
 }
 
@@ -528,8 +536,8 @@ export function commandCodeCliModelVariants(model: CommandCodeCliModel): Record<
  * models are merged with provider defaults before OpenCode applies its own
  * filtering, so an empty map alone cannot suppress an inferred variant.
  */
-export function commandCodeCliConfigVariants(model: CommandCodeCliModel): Record<string, Record<string, unknown>> {
-  const supported = commandCodeCliModelVariants(model);
+export function commandCodeConfigVariants(model: CommandCodeModel): Record<string, Record<string, unknown>> {
+  const supported = commandCodeModelVariants(model);
   const disabled = Object.fromEntries(
     OPENCODE_GENERATED_VARIANTS
       .filter((id) => !(id in supported))

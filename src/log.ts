@@ -1,9 +1,9 @@
 type LogValue = unknown;
 
 function write(level: "info" | "warn" | "error", message: string, value?: LogValue): void {
-  if (process.env.OPENCODE_COMMANDCODE_CLI_DEBUG !== "1" && level === "info") return;
+  if (process.env.OPENCODE_COMMANDCODE_DEBUG !== "1" && level === "info") return;
   const suffix = value === undefined ? "" : ` ${safeJson(value)}`;
-  process.stderr.write(`[opencode-commandcode-cli] ${level}: ${message}${suffix}\n`);
+  process.stderr.write(`[opencode-commandcode] ${level}: ${message}${suffix}\n`);
 }
 
 function safeJson(value: unknown): string {

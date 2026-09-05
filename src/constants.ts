@@ -1,17 +1,17 @@
-export const PROVIDER_ID = "commandcode-cli";
+export const PROVIDER_ID = "commandcode";
 export const PROVIDER_NAME = "Command Code CLI";
 export const ANTHROPIC_NPM = "@ai-sdk/anthropic";
-export const LOCAL_API_KEY = "opencode-commandcode-cli-local";
+export const LOCAL_API_KEY = "opencode-commandcode-local";
 
 export const DEFAULT_MODEL_ID = "deepseek/deepseek-v4-flash";
 export const DEFAULT_CONTEXT_WINDOW = 256_000;
 export const DEFAULT_MAX_OUTPUT = 32_768;
 
-export const MODEL_HEADER = "x-opencode-commandcode-cli-model";
-export const EFFORT_HEADER = "x-opencode-commandcode-cli-effort";
-export const SESSION_HEADER = "x-opencode-commandcode-cli-session";
-export const DIRECTORY_HEADER = "x-opencode-commandcode-cli-directory";
-export const REQUEST_KIND_HEADER = "x-opencode-commandcode-cli-request-kind";
+export const MODEL_HEADER = "x-opencode-commandcode-model";
+export const EFFORT_HEADER = "x-opencode-commandcode-effort";
+export const SESSION_HEADER = "x-opencode-commandcode-session";
+export const DIRECTORY_HEADER = "x-opencode-commandcode-directory";
+export const REQUEST_KIND_HEADER = "x-opencode-commandcode-request-kind";
 
 export const DEFAULT_MAX_TURNS = 100;
 export const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024;

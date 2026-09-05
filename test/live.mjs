@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const executable = process.env.OPENCODE_COMMANDCODE_CLI || "cmdc";
-const model = process.env.OPENCODE_COMMANDCODE_CLI_TEST_MODEL || "deepseek/deepseek-v4-flash";
+const model = process.env.OPENCODE_COMMANDCODE_TEST_MODEL || "deepseek/deepseek-v4-flash";
 
-const { refreshCommandCodeCliModels } = await import("../dist/models.js");
-const metadata = await refreshCommandCodeCliModels({ cwd: process.cwd(), executable });
+const { refreshCommandCodeModels } = await import("../dist/models.js");
+const metadata = await refreshCommandCodeModels({ cwd: process.cwd(), executable });
 assert.ok(metadata.length >= 1);
 const flash = metadata.find((entry) => entry.id === "deepseek/deepseek-v4-flash");
 assert.equal(flash?.contextWindow, 1_000_000);
@@ -38,7 +38,7 @@ function run(cwd, args) {
   });
 }
 
-const cwd = await mkdtemp(join(tmpdir(), "opencode-commandcode-cli-live-"));
+const cwd = await mkdtemp(join(tmpdir(), "opencode-commandcode-live-"));
 const name = `opencode-cli-live-${Date.now()}`;
 try {
   const first = await run(cwd, [

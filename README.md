@@ -1,14 +1,16 @@
-# opencode-commandcode-cli
+# opencode-commandcode
 
 An OpenCode provider adapter that runs the installed Command Code CLI instead of calling Command Code's private generation API.
 
 ```text
-OpenCode → local Anthropic Messages proxy → cmdc -p --output-format json
+OpenCode → local Anthropic Messages proxy → cmdc -p --output-format json < prompt
                                              ├─ Command Code model
                                              └─ Command Code's own tools
 ```
 
-This is the important difference from the older `opencode-commandcode` project. That project translated OpenCode requests into `POST /alpha/generate`. This adapter never builds or sends that request. It starts the official CLI, reads the documented headless JSON stream, and translates the stream back to OpenCode's provider format.
+This adapter starts the official CLI, reads its headless JSON stream, and translates the stream back to OpenCode's provider format. It does not call Command Code's private generation API directly.
+
+The npm package is `@rasyid_rafi/opencode-commandcode`. The unscoped `opencode-commandcode` package belongs to a different publisher.
 
 ## Requirements
 
@@ -28,12 +30,12 @@ Command Code documents `cmd` on macOS, Linux, and WSL, `cmdc` on native Windows,
 
 ## Install
 
-After publishing, add the package to OpenCode's config:
+Add the package to OpenCode's config:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-commandcode-cli"]
+  "plugin": ["@rasyid_rafi/opencode-commandcode"]
 }
 ```
 
@@ -42,11 +44,11 @@ For a checkout of this repository, use the absolute entrypoint instead:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["/absolute/path/to/opencode-commandcode-cli/opencode-commandcode-cli.js"]
+  "plugin": ["/absolute/path/to/opencode-commandcode/opencode-commandcode.js"]
 }
 ```
 
-The plugin adds a `commandcode-cli` provider and populates its models by running:
+The plugin adds a `commandcode` provider and populates its models by running:
 
 ```bash
 cmdc --list-models --no-auto-update
@@ -57,7 +59,7 @@ It then enriches those IDs with the provider-agnostic metadata from [Models.dev]
 Start OpenCode and select a model such as:
 
 ```bash
-opencode run --model commandcode-cli/deepseek/deepseek-v4-flash "Explain this project"
+opencode run --model commandcode/deepseek/deepseek-v4-flash "Explain this project"
 ```
 
 The plugin uses a loopback Anthropic Messages proxy only because OpenCode providers speak HTTP. The proxy is bound to `127.0.0.1` and accepts one fixed, non-secret marker key. Your Command Code credential remains in the CLI's own local auth store.
@@ -67,13 +69,18 @@ The plugin uses a loopback Anthropic Messages proxy only because OpenCode provid
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
 | `OPENCODE_COMMANDCODE_CLI` | `cmdc` | CLI executable or absolute path |
-| `OPENCODE_COMMANDCODE_CLI_YOLO` | `1` | Pass `--yolo` so Command Code can edit files and run commands |
-| `OPENCODE_COMMANDCODE_CLI_MAX_TURNS` | `100` | Headless turn limit |
-| `OPENCODE_COMMANDCODE_CLI_PROXY_PORT` | ephemeral | Fixed loopback proxy port |
-| `OPENCODE_COMMANDCODE_CLI_MAX_REQUEST_BYTES` | `8388608` | Maximum provider request size |
-| `OPENCODE_COMMANDCODE_CLI_DEBUG` | unset | Log adapter info messages to stderr when set to `1` |
+| `OPENCODE_COMMANDCODE_YOLO` | `1` | Pass `--yolo` so Command Code can edit files and run commands |
+| `OPENCODE_COMMANDCODE_MAX_TURNS` | `100` | Headless turn limit |
+| `OPENCODE_COMMANDCODE_PROXY_PORT` | ephemeral | Fixed loopback proxy port |
+| `OPENCODE_COMMANDCODE_MAX_REQUEST_BYTES` | `8388608` | Maximum provider request size |
+| `OPENCODE_COMMANDCODE_DATA_DIR` | `~/.local/share/opencode-commandcode` | Persisted session mappings, retry records, and locks |
+| `OPENCODE_COMMANDCODE_DEBUG` | unset | Log adapter info messages to stderr when set to `1` |
 
-`--yolo` matters. Command Code headless mode blocks file writes and shell commands by default. This adapter enables it by default to preserve the point of using the Command Code harness from OpenCode. Set `OPENCODE_COMMANDCODE_CLI_YOLO=0` for read-only runs.
+`--yolo` matters. Command Code headless mode blocks file writes and shell commands by default. This adapter enables it by default to preserve the point of using the Command Code harness from OpenCode. Set `OPENCODE_COMMANDCODE_YOLO=0` to disable the adapter's permission bypass.
+
+OpenCode Plan mode passes `--plan` and never passes `--yolo`. Build mode explicitly passes `--permission-mode standard`, with `--yolo` according to the setting above, so a resumed Plan conversation can move into implementation. Command Code supports Plan mode in headless runs, but its interactive question and plan-approval tools are normally withheld. Enabling `ask_user_question` in headless mode automatically selects the first option; it does not wait for OpenCode. The adapter instructs the model to ask questions and present plans as ordinary response text. Reply in OpenCode to continue the same session, and switch to Build when ready to implement. Do not enable headless interactive tools through `CMD_TOOLS_ALL_ENABLE` or `CMD_TOOLS_ASK_USER_QUESTION_ENABLE` for this workflow.
+
+Prompts are piped through stdin, including large prompts and attachments. No command shell is used. On Windows, the adapter resolves the installed npm package entrypoint and runs `node.exe`; custom installations can set `OPENCODE_COMMANDCODE_CLI` to an absolute `.js`/`.mjs` entrypoint or native `.exe`.
 
 ## What is bridged
 
@@ -81,6 +88,7 @@ The plugin uses a loopback Anthropic Messages proxy only because OpenCode provid
 - streamed text and reasoning events from `--output-format json`;
 - Command Code's own read, edit, shell, and other built-in tools;
 - Command Code headless sessions, resumed with `--resume` for each OpenCode session;
+- persisted request records that prevent a provider retry from repeating workspace actions;
 - title requests through a short-lived `--no-session` run;
 - internal usage accounting in the local proxy, exposed only through its diagnostic `/v1/usage` route;
 - the already-authenticated CLI session, without an API key entry in OpenCode.
@@ -91,7 +99,13 @@ Usage is deliberately **not included in provider responses**, including the fina
 
 For consumers of `streamCommandCode`, `RunCliOptions.onActivity` is an optional heartbeat callback. The adapter calls it once for each mapped text, reasoning, tool-activity, finish, or error event. Blank lines and non-JSON CLI output do not count as activity. The adapter does not impose a fixed wall-clock timeout on an active CLI stream, so consumers can use this heartbeat to track progress and apply their own stale-stream policy.
 
-Images and remote attachments are not passed directly to the CLI. Text file attachments are inlined when OpenCode includes their base64 data. If visual input is needed, put the image in the workspace and ask Command Code to inspect the local file.
+Images and remote attachments are not passed directly to the CLI. Text document attachments accept Anthropic `source.data`, plain text sources, and base64 data URLs. Unsupported binary documents, remote document sources, and malformed data produce an explicit error instead of being silently omitted. If visual input is needed, put the image in the workspace and ask Command Code to inspect the local file.
+
+Session mappings and the latest completed response are stored in the adapter data directory with private filesystem permissions where supported. A retry of the latest completed request returns its cached events. Requests that started but did not complete, and older requests without cached events, cannot be automatically replayed; send a new message to continue. A missing legacy session name can start a fresh session, but authentication and transport errors never trigger that fallback.
+
+A directory lock prevents two processes from using one CLI session concurrently. After a process crash, the error names the lock directory. Inspect its `owner.json` and confirm the owner has stopped before removing that lock. This deliberately avoids guessing whether an active process is stale.
+
+CLI model discovery remains usable when optional Models.dev or pricing metadata is unavailable. Metadata fetches time out after 10 seconds; catalog CLI commands after 15 seconds. System instructions are preserved in full within the provider request limit. Older conversation history is bounded with an explicit truncation marker.
 
 ## Development
 
@@ -107,7 +121,12 @@ Run the authenticated live smoke test with:
 npm run test:live
 ```
 
-The live test uses the installed CLI and writes only to a temporary workspace.
+The live test uses the installed CLI and writes only to a temporary workspace. To test the HTTP adapter, Plan questions, resume into Build, and Plan write restrictions:
+
+```bash
+npm run build
+bun test/live-adapter.mjs
+```
 
 ## Documentation used
 

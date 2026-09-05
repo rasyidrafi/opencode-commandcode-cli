@@ -14,9 +14,9 @@ import {
   envNumber,
 } from "./constants.js";
 import { streamCommandCode, type CliMappedEvent, type CliUsage } from "./cli.js";
-import { getCommandCodeCliModels, resolveCommandCodeCliModel, type CommandCodeCliModel } from "./models.js";
+import { getCommandCodeModels, resolveCommandCodeModel, type CommandCodeModel } from "./models.js";
 import { buildCommandCodePrompt, type OpenAIMessage } from "./prompt.js";
-import { runInSession, sessionHasStarted, sessionKey, stableSessionName } from "./session.js";
+import { runInSession, sessionKey, stableSessionName } from "./session.js";
 import { addUsage, listUsage, toOpenAIUsage, totalUsage } from "./usage.js";
 import { log } from "./log.js";
 
@@ -34,7 +34,7 @@ type AnthropicMessageRequest = {
 
 type Runtime = {
   directory: string;
-  models: CommandCodeCliModel[];
+  models: CommandCodeModel[];
 };
 
 type OrderedSegment = {
@@ -55,7 +55,7 @@ let runtime: Runtime | null = null;
 const workspaceRoots = new Set<string>();
 
 function requestedPort(): number {
-  const value = envNumber("OPENCODE_COMMANDCODE_CLI_PROXY_PORT", 0, 0);
+  const value = envNumber("OPENCODE_COMMANDCODE_PROXY_PORT", 0, 0);
   return value < 65_536 ? Math.floor(value) : 0;
 }
 
@@ -79,7 +79,7 @@ function withinWorkspace(directory: string): boolean {
 }
 
 async function readJson(request: Request): Promise<AnthropicMessageRequest> {
-  const max = Math.floor(envNumber("OPENCODE_COMMANDCODE_CLI_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES, 1_024));
+  const max = Math.floor(envNumber("OPENCODE_COMMANDCODE_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES, 1_024));
   const declared = Number(request.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > max) throw new Error("The request body is too large");
   const text = await request.text();
@@ -184,13 +184,13 @@ async function handleMessages(request: Request, body: AnthropicMessageRequest): 
   const allMessages: OpenAIMessage[] = body.system === undefined
     ? messages
     : [{ role: "system", content: body.system }, ...messages];
-  const model = resolveCommandCodeCliModel(
+  const model = resolveCommandCodeModel(
     readHeader(request, MODEL_HEADER) || (typeof body.model === "string" ? body.model : undefined),
   );
   const sessionId = readHeader(request, SESSION_HEADER);
   const titleRequest = readHeader(request, REQUEST_KIND_HEADER) === "title";
   const key = sessionKey(directory, sessionId, JSON.stringify(allMessages));
-  const prompt = buildCommandCodePrompt(allMessages, { includeHistory: titleRequest || !sessionHasStarted(key) });
+  const prompt = titleRequest ? buildCommandCodePrompt(allMessages, { includeHistory: true }) : "";
   const effort = readHeader(request, EFFORT_HEADER);
   const events: AsyncIterable<CliMappedEvent> = titleRequest
     ? streamCommandCode({
@@ -209,8 +209,11 @@ async function handleMessages(request: Request, body: AnthropicMessageRequest): 
         model,
         effort,
         sessionName: stableSessionName(key),
-        yolo: envBoolean("OPENCODE_COMMANDCODE_CLI_YOLO", true),
-        maxTurns: envNumber("OPENCODE_COMMANDCODE_CLI_MAX_TURNS", 100, 1),
+        messages: allMessages,
+        requestId: readHeader(request, "x-opencode-commandcode-message"),
+        plan: readHeader(request, "x-opencode-commandcode-mode") === "plan",
+        yolo: envBoolean("OPENCODE_COMMANDCODE_YOLO", true),
+        maxTurns: envNumber("OPENCODE_COMMANDCODE_MAX_TURNS", 100, 1),
         signal: request.signal,
       });
 
@@ -378,10 +381,10 @@ async function handleRequest(request: Request): Promise<Response> {
     return Response.json({ ok: true, provider: PROVIDER_ID, proxy: "loopback", port: proxyPort });
   }
   if (request.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/models")) {
-    return Response.json({ object: "list", data: (runtime?.models ?? getCommandCodeCliModels()).map((entry) => ({ id: entry.id, object: "model", owned_by: "command-code-cli" })) });
+    return Response.json({ object: "list", data: (runtime?.models ?? getCommandCodeModels()).map((entry) => ({ id: entry.id, object: "model", owned_by: "command-code" })) });
   }
   if (request.method === "GET" && (url.pathname === "/v1/usage" || url.pathname === "/usage")) {
-    return Response.json({ provider: PROVIDER_ID, source: "command-code-cli", total: toOpenAIUsage(totalUsage()), sessions: listUsage() });
+    return Response.json({ provider: PROVIDER_ID, source: "command-code", total: toOpenAIUsage(totalUsage()), sessions: listUsage() });
   }
   if (request.method === "POST" && (url.pathname === "/v1/messages" || url.pathname === "/messages")) {
     try {
@@ -396,7 +399,7 @@ async function handleRequest(request: Request): Promise<Response> {
 export async function startProxy(directory = process.cwd()): Promise<number> {
   workspaceRoots.add(resolve(directory));
   if (server && proxyPort) return proxyPort;
-  runtime = { directory: resolve(directory), models: getCommandCodeCliModels() };
+  runtime = { directory: resolve(directory), models: getCommandCodeModels() };
   server = Bun.serve({ hostname: "127.0.0.1", port: requestedPort(), idleTimeout: 0, fetch: handleRequest });
   proxyPort = server.port ?? null;
   if (!proxyPort) throw new Error("Command Code CLI proxy did not receive a port");
@@ -423,6 +426,6 @@ export function getProxyBaseUrl(): string {
   return `http://127.0.0.1:${proxyPort}/v1`;
 }
 
-export function setRuntimeModels(models: CommandCodeCliModel[]): void {
+export function setRuntimeModels(models: CommandCodeModel[]): void {
   if (runtime) runtime.models = models;
 }

@@ -4,13 +4,13 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  commandCodeCliConfigVariants,
-  commandCodeCliModelVariants,
-  fallbackCommandCodeCliModels,
+  commandCodeConfigVariants,
+  commandCodeModelVariants,
+  fallbackCommandCodeModels,
   parseCommandCodeModelReference,
   parseCliModelList,
   parseOfficialPricingPage,
-  resolveCommandCodeCliModel,
+  resolveCommandCodeModel,
 } from "../dist/models.js";
 import { streamCommandCode } from "../dist/cli.js";
 import { buildCommandCodePrompt } from "../dist/prompt.js";
@@ -38,14 +38,14 @@ test("parses Command Code effort metadata", () => {
   assert.deepEqual(efforts["deepseek/deepseek-v4-flash"], ["high", "max"]);
   assert.deepEqual(efforts["meta/muse-spark-1.2-contributor"], []);
   assert.deepEqual(
-    Object.keys(commandCodeCliModelVariants({ reasoningEfforts: efforts["meta/muse-spark-1.2-contributor"] })),
+    Object.keys(commandCodeModelVariants({ reasoningEfforts: efforts["meta/muse-spark-1.2-contributor"] })),
     [],
   );
   assert.deepEqual(
-    Object.keys(commandCodeCliModelVariants({ reasoningEfforts: efforts["deepseek/deepseek-v4-flash"] })),
+    Object.keys(commandCodeModelVariants({ reasoningEfforts: efforts["deepseek/deepseek-v4-flash"] })),
     ["high", "max"],
   );
-  assert.deepEqual(commandCodeCliConfigVariants({ reasoningEfforts: [] }), {
+  assert.deepEqual(commandCodeConfigVariants({ reasoningEfforts: [] }), {
     none: { disabled: true },
     minimal: { disabled: true },
     low: { disabled: true },
@@ -58,15 +58,15 @@ test("parses Command Code effort metadata", () => {
 });
 
 test("keeps LongCat 2.0 Free in the fallback catalog", () => {
-  assert.ok(fallbackCommandCodeCliModels().some((model) => model.id === "meituan/longcat-2.0:free"));
+  assert.ok(fallbackCommandCodeModels().some((model) => model.id === "meituan/longcat-2.0:free"));
 });
 
 test("resolves provider-qualified and short model ids", () => {
   assert.equal(
-    resolveCommandCodeCliModel("commandcode-cli/deepseek/deepseek-v4-flash"),
+    resolveCommandCodeModel("commandcode/deepseek/deepseek-v4-flash"),
     "deepseek/deepseek-v4-flash",
   );
-  assert.equal(resolveCommandCodeCliModel("deepseek-v4-flash"), "deepseek/deepseek-v4-flash");
+  assert.equal(resolveCommandCodeModel("deepseek-v4-flash"), "deepseek/deepseek-v4-flash");
 });
 
 test("parses official pricing records without rounding decimal rates", () => {
@@ -96,10 +96,12 @@ test("builds a quoted prompt for the CLI", () => {
 test("reports activity for mapped events, not blank or non-JSON lines", async () => {
   if (process.platform === "win32") return;
 
-  const directory = await mkdtemp(join(tmpdir(), "opencode-commandcode-cli-test-"));
+  const directory = await mkdtemp(join(tmpdir(), "opencode-commandcode-test-"));
   const executable = join(directory, "fake-cmdc.mjs");
   await writeFile(executable, `#!/usr/bin/env node
-const error = process.argv.at(-1) === "error";
+let prompt = "";
+for await (const chunk of process.stdin) prompt += chunk;
+const error = prompt === "error";
 process.stdout.write("\\nnot-json\\n{}\\n");
 if (error) {
   process.stdout.write(JSON.stringify({ type: "run_error", error: "fake failure" }) + "\\n");

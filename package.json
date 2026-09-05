@@ -1,34 +1,34 @@
 {
-  "name": "opencode-commandcode-cli",
-  "version": "0.1.0",
+  "name": "@rasyid_rafi/opencode-commandcode",
+  "version": "0.2.0",
   "description": "OpenCode provider adapter that runs the official Command Code CLI",
   "license": "MIT",
   "type": "module",
-  "main": "./opencode-commandcode-cli.js",
-  "module": "./opencode-commandcode-cli.js",
+  "main": "./opencode-commandcode.js",
+  "module": "./opencode-commandcode.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./opencode-commandcode-cli.js",
-      "default": "./opencode-commandcode-cli.js"
+      "import": "./opencode-commandcode.js",
+      "default": "./opencode-commandcode.js"
     }
   },
   "files": [
     "dist",
-    "opencode-commandcode-cli.js",
+    "opencode-commandcode.js",
     "README.md"
   ],
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/smoke.mjs",
+    "test": "npm run build && node --test test/smoke.mjs test/regression.mjs",
     "test:live": "npm run build && node test/live.mjs",
     "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rasyidrafi/opencode-commandcode-cli.git"
+    "url": "git+https://github.com/rasyidrafi/opencode-commandcode.git"
   },
   "keywords": [
     "opencode",
