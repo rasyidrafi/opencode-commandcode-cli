@@ -6,6 +6,7 @@ import {
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { log } from "./log.js";
+import { ActivityTranslator } from "./activity.js";
 import {
   DEFAULT_MAX_TURNS,
   envBoolean,
@@ -209,7 +210,7 @@ function mapRawFrame(
     sessionId?: string;
     text: string;
     reasoning: string;
-    activityIds: Set<string>;
+    activity: ActivityTranslator;
     finished: boolean;
     sawError: boolean;
     lastUsage: CliUsage;
@@ -268,18 +269,9 @@ function mapRawFrame(
     return frame.delta ? [{ kind: "text", text: frame.delta }] : [];
   }
 
-  if (type === "tool_running") {
-    const id = typeof frame.toolCallId === "string" ? frame.toolCallId : "";
-    const name = typeof frame.toolName === "string" && frame.toolName
-      ? frame.toolName
-      : "tool";
-    // `tool_queued` and `tool_completed` are transport lifecycle events, not
-    // user-visible reasoning. Emit only the running edge. Prefer the call id
-    // so two sequential calls to the same tool remain separate blocks.
-    const key = id || `name:${name}`;
-    if (state.activityIds.has(key)) return [];
-    state.activityIds.add(key);
-    return [{ kind: "activity", text: `[Command Code tool: Running ${name}]\n` }];
+  if (type === "tool_queued" || type === "tool_running") {
+    const text = state.activity.event(frame);
+    return text ? [{ kind: "activity", text }] : [];
   }
 
   if (type === "run_error") {
@@ -371,7 +363,7 @@ export async function* streamCommandCode(
     sessionId: undefined as string | undefined,
     text: "",
     reasoning: "",
-    activityIds: new Set<string>(),
+    activity: new ActivityTranslator(),
     finished: false,
     sawError: false,
     lastUsage: {

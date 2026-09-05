@@ -1,6 +1,6 @@
 {
   "name": "@rasyid_rafi/opencode-commandcode",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OpenCode provider adapter that runs the official Command Code CLI",
   "license": "MIT",
   "type": "module",

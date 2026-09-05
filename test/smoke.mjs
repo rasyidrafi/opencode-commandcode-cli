@@ -13,7 +13,31 @@ import {
   resolveCommandCodeModel,
 } from "../dist/models.js";
 import { streamCommandCode } from "../dist/cli.js";
+import { ActivityTranslator } from "../dist/activity.js";
 import { buildCommandCodePrompt } from "../dist/prompt.js";
+
+test("tool activity matches interleaved queued inputs to calls and omits payloads", () => {
+  const activity = new ActivityTranslator();
+  const queued = (id, toolName, input) => activity.event({ type: "tool_queued", toolCallId: id, toolName, input });
+  const running = (id, toolName, description) => activity.event({ type: "tool_running", toolCallId: id, toolName, description });
+  assert.equal(queued("a", "read_file", { file_path: "src/index.ts", offset: 10, limit: 20 }), undefined);
+  queued("b", "read_file", { paths: ["README.md", "package.json"] });
+  assert.equal(running("b", "read_file"), "[Command Code tool: Read README.md, package.json]\n");
+  assert.equal(running("a", "read_file"), "[Command Code tool: Read src/index.ts, offset 10, limit 20]\n");
+  assert.equal(running("a", "read_file"), undefined);
+  queued("c", "agent", { description: "Explore authentication", prompt: "private task body" });
+  assert.equal(running("c", "agent"), "[Command Code tool: Agent Explore authentication]\n");
+  queued("d", "custom", { query: "find tests", nested: { api_key: "secret", content: "file body" } });
+  const custom = running("d", "custom");
+  assert.match(custom, /find tests/);
+  assert.doesNotMatch(custom, /secret|file body/);
+  assert.equal(running("e", "shell"), "[Command Code tool: Running shell]\n");
+  assert.equal(running("f", "custom", "Inspect\nconfiguration"), "[Command Code tool: custom: Inspect configuration]\n");
+  queued("g", "edit_file", { file_path: "a.ts", old_string: "old body", new_string: "new body" });
+  assert.equal(running("g", "edit_file"), "[Command Code tool: Edit a.ts]\n");
+  queued("h", "custom", { query: "x".repeat(500) });
+  assert.ok(running("h", "custom").length < 270);
+});
 
 test("parses the official CLI model list", () => {
   const models = parseCliModelList([
